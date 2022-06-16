@@ -29,8 +29,8 @@ runs:
         -H "Accept: application/vnd.github.v3+json")
         if [[ $RESP_CODE != "200" ]]; then
           RESP_MSG=$(jq .message __response.json)
-          if [[ $RESP_MSG != "Not Found" ]]; then
-            echo "Unable to check release status for tag $TAG - HTTP response code was $RESP_CODE"
+          if [[ $RESP_MSG != '"Not Found"' ]]; then
+            echo "Unable to check release status for tag $TAG - HTTP response code was $RESP_CODE and message was $RESP_MSG"
             exit 1
           fi
         fi
