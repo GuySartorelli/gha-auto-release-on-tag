@@ -55,7 +55,7 @@ runs:
         echo "::set-output name=is_prerelease::$IS_PRERELEASE"
       
     - name: Get previous tag
-      id: get-previous-tag
+      id: get_previous_tag
       shell: bash
       env:
         GITHUB_REPOSITORY: ${{ github.repository }}
@@ -173,6 +173,7 @@ runs:
           fi
         fi
 
+        echo "previous_tag is $PREVIOUS_TAG and target_commitish is $TARGET_COMMITISH"
         echo "::set-output name=previous_tag_name::$PREVIOUS_TAG"
         echo "::set-output name=target_commitish::$TARGET_COMMITISH"
     
@@ -182,6 +183,14 @@ runs:
       env:
         GITHUB_REPOSITORY: ${{ github.repository }}
       run: |
+        cat << EOF
+        {
+          "tag_name": "${{ steps.generate_release_name.outputs.release_name }}",
+          "previous_tag_name": "${{ steps.get_previous_tag.outputs.previous_tag_name }}",
+          "target_commitish": "${{ steps.get_previous_tag.outputs.target_commitish }}"
+        }
+        EOF
+
         # https://docs.github.com/en/rest/releases/releases#generate-release-notes-content-for-a-release
         RESP_CODE=$(curl -w %{http_code} -s -o __response.json \
         -X POST https://api.github.com/repos/$GITHUB_REPOSITORY/releases/generate-notes \
@@ -190,8 +199,8 @@ runs:
         -d @- << EOF
         {
           "tag_name": "${{ steps.generate_release_name.outputs.release_name }}",
-          "previous_tag_name": "${{ steps.generate_release_name.outputs.previous_tag_name }}",
-          "target_commitish": "${{ steps.generate_release_name.outputs.target_commitish }}"
+          "previous_tag_name": "${{ steps.get_previous_tag.outputs.previous_tag_name }}",
+          "target_commitish": "${{ steps.get_previous_tag.outputs.target_commitish }}"
         }
         EOF
         )
