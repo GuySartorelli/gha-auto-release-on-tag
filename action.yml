@@ -23,12 +23,12 @@ runs:
         PATCH="${BASH_REMATCH[3]}"
 
         # Check for an existing release matching $TAG
-        # https://docs.github.com/en/rest/releases/releases#get-a-release-by-tag-name
+        # https://docs.github.com/en/rest/releases/releases#list-releases
         RESP_CODE=$(curl -w %{http_code} -s -o __response.json \
-        -X GET https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$TAG \
+        -X GET https://api.github.com/repos/$GITHUB_REPOSITORY/releases \
         -H "Accept: application/vnd.github.v3+json")
         if [[ $RESP_CODE != "200" ]]; then
-          RESP_MSG = $(jq .message __response.json)
+          RESP_MSG=$(jq .message __response.json)
           if [[ $RESP_MSG != "Not Found" ]]; then
             echo "Unable to check release status for tag $TAG - HTTP response code was $RESP_CODE"
             exit 1
