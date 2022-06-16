@@ -1,0 +1,209 @@
+name: Auto-release-on-tag
+description: Automatically create a release for semver-compatible tags
+
+runs:
+  using: composite
+  steps:
+
+    - name: Generate release name
+      id: generate_release_name
+      shell: bash
+      env:
+        GITHUB_REF: ${{ github.ref }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+      run: |
+        # refs/tags/0.1.23 => 0.1.23
+        TAG=$(echo $GITHUB_REF | cut -c 11-)
+        if ! [[ $TAG =~ ^([1-9]+)\.([0-9]+)\.([0-9]+)(-(alpha|beta|rc)[0-9]*)?$ ]]; then
+          echo "Invalid or pre-major (0.x.x) semver tag $TAG"
+          exit 1
+        fi
+        MAJOR="${BASH_REMATCH[1]}"
+        MINOR="${BASH_REMATCH[2]}"
+        PATCH="${BASH_REMATCH[3]}"
+
+        # Check for an existing release matching $TAG
+        # https://docs.github.com/en/rest/releases/releases#get-a-release-by-tag-name
+        RESP_CODE=$(curl -w %{http_code} -s -o __response.json \
+        -X GET https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$TAG \
+        -H "Accept: application/vnd.github.v3+json")
+        if [[ $RESP_CODE != "200" ]]; then
+          echo "Unable to check release status for tag $TAG - HTTP response code was $RESP_CODE"
+          exit 1
+        fi
+        RELEASE_ID=$(jq .id __response.json)
+        if [[ $RELEASE_ID != "null" ]]; then
+          echo "Found an existing release for tag $TAG"
+          exit 1
+        fi
+        
+        echo "Release name is $TAG"
+        echo "::set-output name=release_name::$TAG"
+        echo "::set-output name=major::$MAJOR"
+        echo "::set-output name=minor::$MINOR"
+        echo "::set-output name=patch::$PATCH"
+
+        IS_PRERELEASE="false"
+        if [[ $TAG =~ -(alpha|beta|rc)[0-9]*$ ]]; then
+          IS_PRERELEASE="true"
+        fi
+        echo "Is pre-release: $IS_PRERELEASE"
+        echo "::set-output name=is_prerelease::$IS_PRERELEASE"
+      
+    - name: Get previous tag
+      id: get-previous-tag
+      shell: bash
+      env:
+        GITHUB_REPOSITORY: ${{ github.repository }}
+      run: |
+        MAJOR="${{ steps.generate_release_name.outputs.major }}"
+        MINOR="${{ steps.generate_release_name.outputs.minor }}"
+        PATCH="${{ steps.generate_release_name.outputs.patch }}"
+        PREVIOUS_TAG=
+        TARGET_COMMITISH=
+
+        # Patch release (e.g. 1.2.3)
+        # Previous tag is x.y.z-1 (e.g. 1.2.2)
+        # Target commitish is x.y (e.g. 1.2)
+        if [[ $PATCH != "0" ]]; then
+          PREVIOUS_PATCH=$(($PATCH - 1))
+          PREVIOUS_TAG="$MAJOR.$MINOR.$PREVIOUS_PATCH"
+          TARGET_COMMITISH="$MAJOR.$MINOR"
+
+        # Minor release (e.g. 1.3.0)
+        # Previous tag is x.y-1.* where * is the latest patch available (e.g. 1.2.3)
+        # Target commitish is x.y (e.g. 1.3)
+        elif [[ $MINOR != "0" ]]; then
+          PREVIOUS_MINOR=$(($MINOR - 1))
+          # https://docs.github.com/en/rest/git/refs#get-a-reference
+          RESP_CODE=$(curl -w %{http_code} -s -o __response.json \
+          -X GET https://api.github.com/repos/$GITHUB_REPOSITORY/git/refs/tags/$MAJOR.$PREVIOUS_MINOR. \
+          -H "Accept: application/vnd.github.v3+json")
+          if [[ $RESP_CODE == "200" ]]; then
+            # Find most recent tag for previous minor
+            LATEST_PATCH=$(php -r '
+              $refs = json_decode(file_get_contents("__response.json"));
+              $highest = -1;
+              foreach ($refs as $ref) {
+                $tag = str_replace("refs/tags/", "", $ref->ref);
+                // Ignore non-stable tags
+                if (!preg_match("#^[1-9]+\\.[0-9]+\\.[0-9]+$#", $tag)) {
+                  continue;
+                }
+                $parts = explode(".", $tag);
+                $patch = $parts[2];
+                if ($patch > $highest) {
+                  $highest = $patch;
+                }
+              }
+              echo $highest;
+            ')
+            if [[ $LATEST_PATCH != "-1" ]]; then
+              PREVIOUS_TAG="$MAJOR.$PREVIOUS_MINOR.$LATEST_PATCH"
+            else
+              echo "Could not find a reliable latest tag for the previous minor"
+              # Don't exit - let github infer it instead.
+            fi
+          else 
+            echo "Unable to check for the latest tag for the previous minor - HTTP response code was $RESP_CODE"
+            # Don't exit - let github infer it instead.
+          fi
+          TARGET_COMMITISH="$MAJOR.$MINOR"
+
+        # Major release (e.g. 2.0.0)
+        # Previous tag is x-1.*.* where * is the latest minor/patch available (e.g. 1.2.3)
+        # Target commitish is x.0 - or x if x.0 doesn't exist (e.g. 2.0 or 2)
+        else
+          PREVIOUS_MAJOR=$(($MAJOR - 1))
+          if [[ $PREVIOUS_MAJOR != "0" ]]; then
+            # https://docs.github.com/en/rest/git/refs#get-a-reference
+            RESP_CODE=$(curl -w %{http_code} -s -o __response.json \
+            -X GET https://api.github.com/repos/$GITHUB_REPOSITORY/git/refs/tags/$PREVIOUS_MAJOR. \
+            -H "Accept: application/vnd.github.v3+json")
+            if [[ $RESP_CODE == "200" ]]; then
+              # Find most recent tag for previous major
+              LATEST_MINOR_PATCH=$(php -r '
+                $refs = json_decode(file_get_contents("__response.json"));
+                $highestMinor = -1;
+                $highestPatch = -1;
+                foreach ($refs as $ref) {
+                  $tag = str_replace("refs/tags/", "", $ref->ref);
+                  // Ignore non-stable tags
+                  if (!preg_match("#^[1-9]+\\.[0-9]+\\.[0-9]+$#", $tag)) {
+                    continue;
+                  }
+                  $parts = explode(".", $tag);
+                  $minor = $parts[1];
+                    $patch = $parts[2];
+                  if ($minor > $highestMinor) {
+                    $highestMinor = $minor
+                    $highestPatch = $patch;
+                  } elseif ($minor == $highestMinor && $patch > $highestPatch) {
+                      $highestPatch = $patch;
+                  }
+                }
+                echo "$highestMinor.$highestPatch";
+              ')
+              if [[ $LATEST_MINOR_PATCH != "-1.-1" ]]; then
+                PREVIOUS_TAG="$PREVIOUS_MAJOR.$LATEST_MINOR_PATCH"
+              else
+                echo "Could not find a reliable latest tag for the previous major"
+                # Don't exit - let github infer it instead.
+              fi
+            else 
+              echo "Unable to check for the latest tag for the previous major - HTTP response code was $RESP_CODE"
+              # Don't exit - let github infer it instead.
+            fi
+          else
+            echo "This is the first stable major version. No suitable previous tag to choose from."
+            # Don't exit - let github infer it instead.
+          fi
+          # https://docs.github.com/en/rest/git/refs#get-a-reference
+          RESP_CODE=$(curl -w %{http_code} -s -o __response.json \
+          -X GET https://api.github.com/repos/$GITHUB_REPOSITORY/git/ref/heads/$MAJOR.0 \
+          -H "Accept: application/vnd.github.v3+json")
+          if [[ $RESP_CODE == "200" ]]; then
+            TARGET_COMMITISH="$MAJOR.0"
+          else
+            TARGET_COMMITISH="$MAJOR"
+          fi
+        fi
+
+        echo "::set-output name=previous_tag_name::$PREVIOUS_TAG"
+        echo "::set-output name=target_commitish::$TARGET_COMMITISH"
+    
+    - name: Get release notes
+      id: get-release-notes
+      shell: bash
+      env:
+        GITHUB_REPOSITORY: ${{ github.repository }}
+      run: |
+        # https://docs.github.com/en/rest/releases/releases#generate-release-notes-content-for-a-release
+        RESP_CODE=$(curl -w %{http_code} -s -o __response.json \
+        -X POST https://api.github.com/repos/$GITHUB_REPOSITORY/releases/generate-notes \
+        -H "Accept: application/vnd.github.v3+json" \
+        -H "Authorization: token ${{ github.token }}" \
+        -d @- << EOF
+        {
+          "tag_name": "${{ steps.generate_release_name.outputs.release_name }}",
+          "previous_tag_name": "${{ steps.generate_release_name.outputs.previous_tag_name }}",
+          "target_commitish": "${{ steps.generate_release_name.outputs.target_commitish }}"
+        }
+        EOF
+        )
+        if [[ $RESP_CODE != "200" ]]; then
+          echo "Unable to get release notes - HTTP response code was $RESP_CODE"
+          exit 1
+        fi
+
+        NOTES=$(jq .body __response.json)
+        echo "::set-output name=notes::$NOTES"
+
+    - name: Add tag to repo
+      uses: silverstripe/gha-tag-release@v1
+      with:
+        tag: ${{ steps.generate_release_name.outputs.release_name }}
+        delete_existing: false
+        release: true
+        release_description: ${{ steps.get-release-notes.outputs.notes }}
+        is_prerelease: ${{ steps.generate_release_name.outputs.is_prerelease }}
