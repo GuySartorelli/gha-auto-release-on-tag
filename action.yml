@@ -23,9 +23,9 @@ runs:
         PATCH="${BASH_REMATCH[3]}"
 
         # Check for an existing release matching $TAG
-        # https://docs.github.com/en/rest/releases/releases#list-releases
+        # https://docs.github.com/en/rest/releases/releases#get-a-release-by-tag-name
         RESP_CODE=$(curl -w %{http_code} -s -o __response.json \
-        -X GET https://api.github.com/repos/$GITHUB_REPOSITORY/releases \
+        -X GET https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$TAG \
         -H "Accept: application/vnd.github.v3+json")
         if [[ $RESP_CODE != "200" ]]; then
           RESP_MSG=$(jq .message __response.json)
