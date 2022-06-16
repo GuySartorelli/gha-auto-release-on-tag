@@ -204,7 +204,7 @@ runs:
         echo "::set-output name=notes::$NOTES"
 
     - name: Add tag to repo
-      uses: silverstripe/gha-tag-release@v1
+      uses: creative-commoners/gha-tag-release@pulls/1/allow-pre-release
       with:
         tag: ${{ steps.generate_release_name.outputs.release_name }}
         delete_existing: false
